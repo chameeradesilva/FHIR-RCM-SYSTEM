@@ -1,0 +1,142 @@
+version: '3'
+
+services:
+  # Kafka in KRaft mode
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka-kraft
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_METADATA_LOG_SEGMENT_BYTES: '10485760'
+      KAFKA_METADATA_MAX_RETENTION_BYTES: '104857600'
+      KAFKA_METADATA_LOG_RETENTION_BYTES: '104857600'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    volumes:
+      - ./kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MongoDB for storing FHIR resources
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./mongo_data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+
+  # FHIR server simulator
+  fhir-server:
+    build:
+      context: ./fhir_server
+      dockerfile: Dockerfile
+    container_name: fhir-server
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongodb
+    environment:
+      MONGODB_URI: mongodb://root:example@mongodb:27017/
+      MONGODB_DB: fhir
+
+  # Patient Intake Service
+  patient-intake:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: patient-intake
+    depends_on:
+      kafka:
+        condition: service_healthy
+      fhir-server:
+        condition: service_started
+    command: python -m consumers.patient_intake
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      FHIR_SERVER_URL: http://fhir-server:8000
+      LLM_API_KEY: ${LLM_API_KEY}
+
+  # Clinical Analysis Service
+  clinical-analysis:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clinical-analysis
+    depends_on:
+      kafka:
+        condition: service_healthy
+      fhir-server:
+        condition: service_started
+    command: python -m consumers.clinical_analysis
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      FHIR_SERVER_URL: http://fhir-server:8000
+      LLM_API_KEY: ${LLM_API_KEY}
+
+  # Billing Service
+  billing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: billing
+    depends_on:
+      kafka:
+        condition: service_healthy
+      fhir-server:
+        condition: service_started
+    command: python -m consumers.billing_processor
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      FHIR_SERVER_URL: http://fhir-server:8000
+      LLM_API_KEY: ${LLM_API_KEY}
+
+  # Payment Service
+  payment:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: payment
+    depends_on:
+      kafka:
+        condition: service_healthy
+      fhir-server:
+        condition: service_started
+    command: python -m consumers.payment_processor
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      FHIR_SERVER_URL: http://fhir-server:8000
+      LLM_API_KEY: ${LLM_API_KEY}
+
+  # Dashboard (optional)
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: dashboard
+    ports:
+      - "8050:8050"
+    depends_on:
+      - mongodb
+    environment:
+      MONGODB_URI: mongodb://root:example@mongodb:27017/
+      MONGODB_DB: fhir
