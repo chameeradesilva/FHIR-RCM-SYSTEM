@@ -45,7 +45,7 @@ mongo_data/
 # Images and generated files
 images/
 *.png
-*.jpg
+# *.jpg
 *.jpeg
 
 # Test coverage
